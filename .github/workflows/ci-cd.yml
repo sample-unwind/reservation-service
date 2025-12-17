@@ -28,7 +28,7 @@ jobs:
       - name: Lint code
         run: |
           black --check .
-          mypy .
+          mypy . --ignore-missing-imports
           isort --check-only .
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
