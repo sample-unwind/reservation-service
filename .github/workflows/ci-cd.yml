@@ -1,0 +1,68 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install black mypy isort flake8 pytest
+
+      - name: Lint code
+        run: |
+          black --check .
+          mypy .
+          isort --check-only .
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Run tests
+        run: |
+          pytest  # Placeholder
+          python -c "from main import app; print('App imports successfully')"
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  build-push-deploy:
+    needs: [lint-test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t placeholder/reservation-service:latest .
+
+      # TODO: Log in to ACR
+      # TODO: Push image to youracr.azurecr.io/reservation-service:latest
+      # TODO: Set AKS context and helm upgrade reservation-service
