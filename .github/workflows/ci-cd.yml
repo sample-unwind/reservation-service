@@ -27,6 +27,7 @@ jobs:
 
       - name: Lint code
         run: |
+          black .
           black --check .
           mypy . --ignore-missing-imports
           isort --check-only .

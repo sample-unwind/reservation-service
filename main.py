@@ -11,13 +11,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/health/live")
 def health_live():
     return {"status": "alive"}
 
+
 @app.get("/health/ready")
 def health_ready():
     return {"status": "ready"}
+
 
 @app.get("/")
 def root():
