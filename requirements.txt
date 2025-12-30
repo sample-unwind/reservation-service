@@ -6,3 +6,5 @@ python-keycloak
 pydantic
 httpx
 python-multipart
+grpcio
+grpcio-tools

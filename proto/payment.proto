@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package payment;
+
+option go_package = "payment/proto";
+
+service PaymentService {
+    rpc ProcessPayment(PaymentRequest) returns (PaymentResponse);
+    rpc GetPaymentStatus(PaymentStatusRequest) returns (PaymentStatusResponse);
+}
+
+message PaymentRequest {
+    string reservation_id = 1;
+    string user_id = 2;
+    double amount = 3;
+    string currency = 4;  // EUR, USD
+}
+
+message PaymentResponse {
+    bool success = 1;
+    string transaction_id = 2;
+    string message = 3;
+}
+
+message PaymentStatusRequest {
+    string transaction_id = 1;
+}
+
+message PaymentStatusResponse {
+    string status = 1;  // PENDING, COMPLETED, FAILED
+    string transaction_id = 2;
+}
