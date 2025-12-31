@@ -3,6 +3,12 @@ GraphQL Schema for Reservation Service
 
 Defines GraphQL types, queries, and mutations for reservation management.
 Implements CQRS pattern with Event Sourcing.
+
+Multitenancy:
+- PostgreSQL RLS (Row-Level Security) handles tenant isolation for all queries
+- The tenant_id is set in the database session by main.py before any operations
+- Queries do NOT need explicit tenant_id WHERE clauses (RLS handles this)
+- INSERTs still need tenant_id as RLS only filters, doesn't enforce INSERT values
 """
 
 from datetime import datetime, timedelta
@@ -149,6 +155,14 @@ def get_tenant_id(info: strawberry.Info) -> PyUUID:
     """
     Extract tenant ID from request context.
 
+    This is used primarily for:
+    - INSERT operations (RLS doesn't enforce INSERT values)
+    - Event store writes (need explicit tenant_id)
+    - Validation purposes
+
+    Note: For SELECT queries, PostgreSQL RLS handles filtering automatically
+    based on the app.tenant_id session variable set by main.py.
+
     Falls back to a default tenant ID for development/testing.
     """
     tenant_id = info.context.get("tenant_id")
@@ -180,6 +194,8 @@ class Query:
         """
         Get all reservations with optional filtering.
 
+        Tenant isolation is handled by PostgreSQL RLS automatically.
+
         Args:
             status: Filter by status (e.g., CONFIRMED, PENDING)
             user_id: Filter by user ID
@@ -187,11 +203,10 @@ class Query:
             offset: Number of results to skip
         """
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
+        # RLS handles tenant filtering - no need for explicit WHERE clause
         query = (
             select(ReservationModel)
-            .where(ReservationModel.tenant_id == tenant_id)
             .order_by(ReservationModel.created_at.desc())
             .limit(limit)
             .offset(offset)
@@ -207,17 +222,12 @@ class Query:
 
     @strawberry.field
     def reservation_by_id(self, info: strawberry.Info, id: str) -> Reservation | None:
-        """Get a single reservation by ID."""
+        """Get a single reservation by ID. RLS handles tenant isolation."""
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
+        # RLS handles tenant filtering automatically
         row = db.execute(
-            select(ReservationModel).where(
-                and_(
-                    ReservationModel.id == PyUUID(id),
-                    ReservationModel.tenant_id == tenant_id,
-                )
-            )
+            select(ReservationModel).where(ReservationModel.id == PyUUID(id))
         ).scalar_one_or_none()
 
         return to_graphql_reservation(row) if row else None
@@ -229,18 +239,13 @@ class Query:
         user_id: str,
         include_completed: bool = False,
     ) -> list[Reservation]:
-        """Get all reservations for a specific user."""
+        """Get all reservations for a specific user. RLS handles tenant isolation."""
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
+        # RLS handles tenant filtering automatically
         query = (
             select(ReservationModel)
-            .where(
-                and_(
-                    ReservationModel.user_id == PyUUID(user_id),
-                    ReservationModel.tenant_id == tenant_id,
-                )
-            )
+            .where(ReservationModel.user_id == PyUUID(user_id))
             .order_by(ReservationModel.start_time.desc())
         )
 
@@ -265,16 +270,15 @@ class Query:
         start_time: str | None = None,
         end_time: str | None = None,
     ) -> list[Reservation]:
-        """Get all reservations for a specific parking spot."""
+        """Get all reservations for a specific parking spot. RLS handles tenant isolation."""
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
+        # RLS handles tenant filtering automatically
         query = (
             select(ReservationModel)
             .where(
                 and_(
                     ReservationModel.parking_spot_id == parking_spot_id,
-                    ReservationModel.tenant_id == tenant_id,
                     ReservationModel.status.in_(
                         [
                             ReservationStatus.PENDING.value,
@@ -305,20 +309,18 @@ class Query:
         start_time: str,
         duration_hours: int,
     ) -> AvailabilityResult:
-        """Check if a parking spot is available for a given time slot."""
+        """Check if a parking spot is available. RLS handles tenant isolation."""
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
         start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
         end_dt = start_dt + timedelta(hours=duration_hours)
 
-        # Find conflicting reservations
+        # RLS handles tenant filtering - find conflicting reservations
         conflicts = (
             db.execute(
                 select(ReservationModel).where(
                     and_(
                         ReservationModel.parking_spot_id == parking_spot_id,
-                        ReservationModel.tenant_id == tenant_id,
                         ReservationModel.status.in_(
                             [
                                 ReservationStatus.PENDING.value,
@@ -343,28 +345,20 @@ class Query:
 
     @strawberry.field
     def reservation_stats(self, info: strawberry.Info) -> ReservationStats:
-        """Get reservation statistics for the current tenant."""
+        """Get reservation statistics. RLS handles tenant isolation."""
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
-        # Count by status
-        total = (
-            db.query(ReservationModel)
-            .filter(ReservationModel.tenant_id == tenant_id)
-            .count()
-        )
+        # RLS handles tenant filtering - count by status
+        total = db.query(ReservationModel).count()
 
         active = (
             db.query(ReservationModel)
             .filter(
-                and_(
-                    ReservationModel.tenant_id == tenant_id,
-                    ReservationModel.status.in_(
-                        [
-                            ReservationStatus.PENDING.value,
-                            ReservationStatus.CONFIRMED.value,
-                        ]
-                    ),
+                ReservationModel.status.in_(
+                    [
+                        ReservationStatus.PENDING.value,
+                        ReservationStatus.CONFIRMED.value,
+                    ]
                 )
             )
             .count()
@@ -372,23 +366,13 @@ class Query:
 
         completed = (
             db.query(ReservationModel)
-            .filter(
-                and_(
-                    ReservationModel.tenant_id == tenant_id,
-                    ReservationModel.status == ReservationStatus.COMPLETED.value,
-                )
-            )
+            .filter(ReservationModel.status == ReservationStatus.COMPLETED.value)
             .count()
         )
 
         cancelled = (
             db.query(ReservationModel)
-            .filter(
-                and_(
-                    ReservationModel.tenant_id == tenant_id,
-                    ReservationModel.status == ReservationStatus.CANCELLED.value,
-                )
-            )
+            .filter(ReservationModel.status == ReservationStatus.CANCELLED.value)
             .count()
         )
 
@@ -405,15 +389,14 @@ class Query:
         info: strawberry.Info,
         reservation_id: str,
     ) -> list[Event]:
-        """Get all events for a specific reservation (for debugging/audit)."""
+        """Get all events for a specific reservation (for debugging/audit).
+        RLS handles tenant isolation for event_store table."""
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
+        # RLS handles tenant filtering on event_store table
         event_store = EventStore(db)
         events = event_store.get_events(PyUUID(reservation_id))
 
-        # Filter by tenant
-        events = [e for e in events if str(e.tenant_id) == str(tenant_id)]
         return [to_graphql_event(e) for e in events]
 
 
@@ -437,12 +420,13 @@ class Mutation:
 
         This mutation:
         1. Validates the input
-        2. Checks availability
-        3. Creates an aggregate
+        2. Checks availability (RLS handles tenant filtering)
+        3. Creates an aggregate with explicit tenant_id
         4. Emits a RESERVATION_CREATED event
         5. Projects the event to the read model
         """
         db: Session = info.context["db"]
+        # Need tenant_id for INSERT operations (RLS doesn't enforce INSERT values)
         tenant_id = get_tenant_id(info)
 
         # Parse input
@@ -459,13 +443,12 @@ class Mutation:
         if input.total_cost < 0:
             raise ValueError("Total cost cannot be negative")
 
-        # Check availability
+        # Check availability - RLS handles tenant filtering
         conflicts = (
             db.execute(
                 select(ReservationModel).where(
                     and_(
                         ReservationModel.parking_spot_id == input.parking_spot_id,
-                        ReservationModel.tenant_id == tenant_id,
                         ReservationModel.status.in_(
                             [
                                 ReservationStatus.PENDING.value,
@@ -540,6 +523,7 @@ class Mutation:
     ) -> Reservation:
         """
         Confirm a pending reservation after payment.
+        RLS handles tenant isolation for the SELECT query.
 
         This mutation:
         1. Validates the reservation exists and is PENDING
@@ -547,17 +531,13 @@ class Mutation:
         3. Updates the read model to CONFIRMED
         """
         db: Session = info.context["db"]
+        # Need tenant_id for event store INSERT
         tenant_id = get_tenant_id(info)
         reservation_id = PyUUID(id)
 
-        # Get existing reservation
+        # Get existing reservation - RLS handles tenant filtering
         reservation = db.execute(
-            select(ReservationModel).where(
-                and_(
-                    ReservationModel.id == reservation_id,
-                    ReservationModel.tenant_id == tenant_id,
-                )
-            )
+            select(ReservationModel).where(ReservationModel.id == reservation_id)
         ).scalar_one_or_none()
 
         if not reservation:
@@ -600,6 +580,7 @@ class Mutation:
     ) -> Reservation:
         """
         Cancel an existing reservation.
+        RLS handles tenant isolation for SELECT and event INSERT.
 
         This mutation:
         1. Validates the reservation exists and is cancellable
@@ -607,17 +588,13 @@ class Mutation:
         3. Updates the read model to CANCELLED
         """
         db: Session = info.context["db"]
+        # Need tenant_id for event store INSERT (RLS enforces it matches)
         tenant_id = get_tenant_id(info)
         reservation_id = PyUUID(id)
 
-        # Get existing reservation
+        # Get existing reservation - RLS handles tenant filtering
         reservation = db.execute(
-            select(ReservationModel).where(
-                and_(
-                    ReservationModel.id == reservation_id,
-                    ReservationModel.tenant_id == tenant_id,
-                )
-            )
+            select(ReservationModel).where(ReservationModel.id == reservation_id)
         ).scalar_one_or_none()
 
         if not reservation:
@@ -662,19 +639,16 @@ class Mutation:
     ) -> Reservation:
         """
         Mark a reservation as completed (after parking session ends).
+        RLS handles tenant isolation for SELECT and event INSERT.
         """
         db: Session = info.context["db"]
+        # Need tenant_id for event store INSERT (RLS enforces it matches)
         tenant_id = get_tenant_id(info)
         reservation_id = PyUUID(id)
 
-        # Get existing reservation
+        # Get existing reservation - RLS handles tenant filtering
         reservation = db.execute(
-            select(ReservationModel).where(
-                and_(
-                    ReservationModel.id == reservation_id,
-                    ReservationModel.tenant_id == tenant_id,
-                )
-            )
+            select(ReservationModel).where(ReservationModel.id == reservation_id)
         ).scalar_one_or_none()
 
         if not reservation:
@@ -715,19 +689,15 @@ class Mutation:
     ) -> DeleteResult:
         """
         Delete a reservation (admin only, use with caution).
+        RLS handles tenant isolation for SELECT and DELETE.
 
         Note: This is a hard delete. In production, prefer cancel_reservation.
         """
         db: Session = info.context["db"]
-        tenant_id = get_tenant_id(info)
 
+        # RLS handles tenant filtering for both SELECT and DELETE
         reservation = db.execute(
-            select(ReservationModel).where(
-                and_(
-                    ReservationModel.id == PyUUID(id),
-                    ReservationModel.tenant_id == tenant_id,
-                )
-            )
+            select(ReservationModel).where(ReservationModel.id == PyUUID(id))
         ).scalar_one_or_none()
 
         if not reservation:

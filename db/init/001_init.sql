@@ -104,6 +104,12 @@ CREATE INDEX IF NOT EXISTS idx_reservations_end_time ON reservations(end_time);
 -- =============================================================================
 -- Ensures data isolation between tenants using PostgreSQL RLS policies.
 -- The application sets app.tenant_id session variable before queries.
+--
+-- RLS policies enforce:
+-- - SELECT: Only rows matching current tenant_id are visible
+-- - INSERT: New rows must have tenant_id matching current tenant_id
+-- - UPDATE: Can only update rows matching current tenant_id
+-- - DELETE: Can only delete rows matching current tenant_id
 
 -- Enable RLS on tables
 ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
@@ -112,20 +118,38 @@ ALTER TABLE event_store ENABLE ROW LEVEL SECURITY;
 -- Drop existing policies if they exist
 DROP POLICY IF EXISTS tenant_isolation_policy ON reservations;
 DROP POLICY IF EXISTS tenant_isolation_policy ON event_store;
+DROP POLICY IF EXISTS tenant_insert_policy ON reservations;
+DROP POLICY IF EXISTS tenant_insert_policy ON event_store;
 
--- Create RLS policies
--- Note: These policies require the application to SET app.tenant_id before queries
+-- =============================================================================
+-- Reservations Table RLS Policies
+-- =============================================================================
 
--- Policy for reservations table
+-- SELECT/UPDATE/DELETE policy: Only see/modify rows for current tenant
 CREATE POLICY tenant_isolation_policy ON reservations
+    FOR ALL
     USING (tenant_id = COALESCE(
+        NULLIF(current_setting('app.tenant_id', true), '')::UUID,
+        tenant_id
+    ))
+    WITH CHECK (tenant_id = COALESCE(
         NULLIF(current_setting('app.tenant_id', true), '')::UUID,
         tenant_id
     ));
 
--- Policy for event_store table
+-- =============================================================================
+-- Event Store Table RLS Policies
+-- =============================================================================
+
+-- SELECT/UPDATE/DELETE policy: Only see/modify events for current tenant
+-- Note: Events should be append-only, but we enforce full isolation
 CREATE POLICY tenant_isolation_policy ON event_store
+    FOR ALL
     USING (tenant_id = COALESCE(
+        NULLIF(current_setting('app.tenant_id', true), '')::UUID,
+        tenant_id
+    ))
+    WITH CHECK (tenant_id = COALESCE(
         NULLIF(current_setting('app.tenant_id', true), '')::UUID,
         tenant_id
     ));

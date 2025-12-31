@@ -24,7 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from strawberry.fastapi import GraphQLRouter
 
-from db import check_db_connection, get_db
+from db import check_db_connection, get_db, set_tenant_id
 from schema import schema
 
 # =============================================================================
@@ -163,6 +163,9 @@ def get_tenant_id(request: Request) -> str | None:
 # GraphQL Context
 # =============================================================================
 
+# Default tenant ID for requests without explicit tenant
+DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
+
 
 def get_context(
     request: Request,
@@ -170,6 +173,9 @@ def get_context(
 ) -> dict[str, Any]:
     """
     Create GraphQL context with database session and user info.
+
+    This function also sets up PostgreSQL RLS (Row-Level Security)
+    by setting the tenant_id session variable before any queries.
 
     Args:
         request: FastAPI request object
@@ -184,6 +190,21 @@ def get_context(
     # If no tenant ID provided, try to get from user token
     if not tenant_id and current_user:
         tenant_id = current_user.get("tenant_id")
+
+    # Fall back to default tenant ID if none provided
+    if not tenant_id:
+        tenant_id = DEFAULT_TENANT_ID
+        logger.debug(f"No tenant_id provided, using default: {tenant_id}")
+
+    # Set tenant_id for PostgreSQL RLS
+    # This enables row-level security policies to filter by tenant
+    try:
+        set_tenant_id(db, tenant_id)
+        logger.debug(f"RLS enabled for tenant: {tenant_id}")
+    except ValueError as e:
+        logger.error(f"Invalid tenant_id, using default: {e}")
+        tenant_id = DEFAULT_TENANT_ID
+        set_tenant_id(db, tenant_id)
 
     return {
         "db": db,
@@ -290,20 +311,18 @@ def get_reservation_stats(
     Get reservation statistics for monitoring and analytics.
 
     Returns counts of reservations by status for the current tenant.
+    Uses PostgreSQL RLS for tenant isolation.
     """
     from models import ReservationModel, ReservationStatus
 
     try:
-        tenant_id = get_tenant_id(request)
+        tenant_id = get_tenant_id(request) or DEFAULT_TENANT_ID
 
-        # Build base query
+        # Set tenant_id for RLS - all queries will be filtered by tenant
+        set_tenant_id(db, tenant_id)
+
+        # Build base query - RLS handles tenant filtering
         base_query = db.query(ReservationModel)
-        if tenant_id:
-            from uuid import UUID
-
-            base_query = base_query.filter(
-                ReservationModel.tenant_id == UUID(tenant_id)
-            )
 
         # Count by status
         total = base_query.count()

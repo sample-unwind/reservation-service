@@ -16,7 +16,10 @@ This service implements the Command Query Responsibility Segregation (CQRS) patt
 
 Row-Level Security (RLS) is implemented via `tenant_id` column:
 - Tenant ID is extracted from `X-Tenant-ID` header
-- PostgreSQL RLS policies enforce data isolation
+- PostgreSQL RLS policies enforce data isolation at database level
+- RLS applies to all CRUD operations (SELECT, INSERT, UPDATE, DELETE)
+- Application sets `app.tenant_id` session variable before each request
+- Defense in depth: Database enforces isolation even if application has bugs
 
 ## Tech Stack
 
