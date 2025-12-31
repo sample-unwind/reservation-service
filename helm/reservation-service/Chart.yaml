@@ -1,0 +1,6 @@
+apiVersion: v2
+name: reservation-service
+description: Parkora Reservation Service - Python FastAPI GraphQL API with CQRS/Event Sourcing
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

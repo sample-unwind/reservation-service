@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # Reservation Service API
+  reservation-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://reservation_service:password123@postgres:5432/reservation_db
+      - KEYCLOAK_URL=https://keycloak.parkora.crn.si/auth/
+      - KEYCLOAK_REALM=parkora
+      - KEYCLOAK_CLIENT_ID=backend-services
+      - PARKING_SERVICE_URL=https://parkora.crn.si/api/v1/parking
+      - PAYMENT_SERVICE_HOST=payment-service
+      - PAYMENT_SERVICE_PORT=50051
+      - SQL_DEBUG=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - reservation-network
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=reservation_service
+      - POSTGRES_PASSWORD=password123
+      - POSTGRES_DB=reservation_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reservation_service -d reservation_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - reservation-network
+    restart: unless-stopped
+
+networks:
+  reservation-network:
+    driver: bridge
+
+volumes:
+  postgres_data:

@@ -1,8 +1,44 @@
+# =============================================================================
+# Reservation Service Dependencies
+# =============================================================================
+
+# Web Framework
 fastapi
 uvicorn[standard]
+
+# GraphQL
+strawberry-graphql[fastapi]
+
+# Database
 sqlalchemy
 psycopg2-binary
-python-keycloak
+asyncpg
+alembic
+
+# Data Validation
 pydantic
+
+# Authentication
+python-keycloak
+
+# HTTP Client (for parking-service integration)
 httpx
+
+# gRPC (for payment-service integration)
+grpcio
+grpcio-tools
+
+# Message Queue (for async communication)
+pika
+
+# Environment
+python-dotenv
 python-multipart
+
+# Development/Testing
+pytest
+pytest-cov
+black
+mypy
+isort
+flake8
