@@ -31,6 +31,10 @@ from clients.payment_client import (
 from event_store import EventStore, ReservationAggregate, ReservationProjector
 from models import EventModel, EventType, ReservationModel, ReservationStatus
 
+# Default tenant ID - MUST match the one in main.py
+# This ensures consistency across the application
+DEFAULT_TENANT_ID = PyUUID("00000000-0000-0000-0000-000000000001")
+
 # =============================================================================
 # GraphQL Types
 # =============================================================================
@@ -181,14 +185,15 @@ def get_tenant_id(info: strawberry.Info) -> PyUUID:
     Note: For SELECT queries, PostgreSQL RLS handles filtering automatically
     based on the app.tenant_id session variable set by main.py.
 
-    Falls back to a default tenant ID for development/testing.
+    GLOBAL RULE: Always returns a valid tenant_id (uses DEFAULT if not provided).
+    This ensures RLS policies never block operations due to missing tenant_id.
     """
     tenant_id = info.context.get("tenant_id")
     if tenant_id:
         return PyUUID(tenant_id) if isinstance(tenant_id, str) else tenant_id
 
-    # Default tenant ID for development
-    return PyUUID("00000000-0000-0000-0000-000000000001")
+    # GLOBAL RULE: Always use default tenant ID
+    return DEFAULT_TENANT_ID
 
 
 # =============================================================================
