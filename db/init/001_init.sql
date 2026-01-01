@@ -132,34 +132,43 @@ DROP POLICY IF EXISTS tenant_insert_policy ON event_store;
 -- Reservations Table RLS Policies
 -- =============================================================================
 
--- STRICT policy: If app.tenant_id is not set or empty, return NO rows
--- This ensures complete tenant isolation with no fallback
+-- STRICT policy using CASE to prevent UUID cast errors when tenant_id is not set
+-- If app.tenant_id is not set or empty, return NO rows (false)
+-- Otherwise, filter by the provided tenant_id
 CREATE POLICY tenant_isolation_policy ON reservations
     FOR ALL
     USING (
-        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
-        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+        CASE 
+            WHEN COALESCE(current_setting('app.tenant_id', true), '') = '' THEN false
+            ELSE tenant_id = current_setting('app.tenant_id', true)::UUID
+        END
     )
     WITH CHECK (
-        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
-        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+        CASE 
+            WHEN COALESCE(current_setting('app.tenant_id', true), '') = '' THEN false
+            ELSE tenant_id = current_setting('app.tenant_id', true)::UUID
+        END
     );
 
 -- =============================================================================
 -- Event Store Table RLS Policies
 -- =============================================================================
 
--- STRICT policy: If app.tenant_id is not set or empty, return NO rows
+-- STRICT policy using CASE to prevent UUID cast errors when tenant_id is not set
 -- Events are append-only, but we enforce full isolation
 CREATE POLICY tenant_isolation_policy ON event_store
     FOR ALL
     USING (
-        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
-        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+        CASE 
+            WHEN COALESCE(current_setting('app.tenant_id', true), '') = '' THEN false
+            ELSE tenant_id = current_setting('app.tenant_id', true)::UUID
+        END
     )
     WITH CHECK (
-        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
-        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+        CASE 
+            WHEN COALESCE(current_setting('app.tenant_id', true), '') = '' THEN false
+            ELSE tenant_id = current_setting('app.tenant_id', true)::UUID
+        END
     );
 
 -- =============================================================================
