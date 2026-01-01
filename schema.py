@@ -20,6 +20,10 @@ import strawberry
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
+from clients.payment_client import (PaymentClient, PaymentRequest,
+                                    PaymentServiceError,
+                                    PaymentServiceUnavailableError,
+                                    RefundRequest, get_payment_client)
 from event_store import EventStore, ReservationAggregate, ReservationProjector
 from models import EventModel, EventType, ReservationModel, ReservationStatus
 
@@ -82,6 +86,16 @@ class AvailabilityResult:
 
     available: bool
     conflicts: list[str] | None = None
+
+
+@strawberry.type
+class PaymentResult:
+    """GraphQL type for payment operation result."""
+
+    success: bool
+    transaction_id: str | None = None
+    message: str | None = None
+    error_code: str | None = None
 
 
 # =============================================================================
@@ -584,8 +598,9 @@ class Mutation:
 
         This mutation:
         1. Validates the reservation exists and is cancellable
-        2. Emits a RESERVATION_CANCELLED event
-        3. Updates the read model to CANCELLED
+        2. If CONFIRMED, triggers a refund via payment-service
+        3. Emits a RESERVATION_CANCELLED event
+        4. Updates the read model to CANCELLED
         """
         db: Session = info.context["db"]
         # Need tenant_id for event store INSERT (RLS enforces it matches)
@@ -608,16 +623,51 @@ class Mutation:
                 f"Cannot cancel reservation with status: {reservation.status}"
             )
 
+        # If reservation was CONFIRMED (paid), trigger a refund
+        refund_id: str | None = None
+        if (
+            reservation.status == ReservationStatus.CONFIRMED.value
+            and reservation.transaction_id
+        ):
+            try:
+                payment_client = get_payment_client()
+                refund_request = RefundRequest(
+                    transaction_id=str(reservation.transaction_id),
+                    tenant_id=tenant_id,
+                    amount=0.0,  # Full refund
+                    reason=reason or "Reservation cancelled",
+                )
+                refund_response = payment_client.refund_payment(refund_request)
+                if refund_response.success:
+                    refund_id = refund_response.refund_id
+                else:
+                    # Log but don't fail cancellation if refund fails
+                    import logging
+
+                    logging.warning(
+                        f"Refund failed for reservation {id}: "
+                        f"{refund_response.message}"
+                    )
+            except PaymentServiceError as e:
+                # Log but don't fail cancellation if refund fails
+                import logging
+
+                logging.warning(f"Refund error for reservation {id}: {e}")
+
         # Create event
         event_store = EventStore(db)
+        event_data = {
+            "id": str(reservation_id),
+            "status": ReservationStatus.CANCELLED.value,
+            "reason": reason,
+        }
+        if refund_id:
+            event_data["refund_id"] = refund_id
+
         event = event_store.append(
             aggregate_id=reservation_id,
             event_type=EventType.RESERVATION_CANCELLED,
-            data={
-                "id": str(reservation_id),
-                "status": ReservationStatus.CANCELLED.value,
-                "reason": reason,
-            },
+            data=event_data,
             tenant_id=tenant_id,
             event_metadata={"source": "graphql_mutation"},
         )
@@ -680,6 +730,115 @@ class Mutation:
         db.refresh(reservation)
 
         return to_graphql_reservation(reservation)
+
+    @strawberry.mutation
+    def pay_reservation(
+        self,
+        info: strawberry.Info,
+        id: str,
+    ) -> PaymentResult:
+        """
+        Process payment for a pending reservation.
+
+        This mutation:
+        1. Validates the reservation exists and is PENDING
+        2. Calls payment-service via gRPC to process payment
+        3. If payment succeeds, confirms the reservation
+        4. Returns the transaction_id for display to user
+
+        Args:
+            id: UUID of the reservation to pay for
+
+        Returns:
+            PaymentResult with success status and transaction_id
+        """
+        db: Session = info.context["db"]
+        tenant_id = get_tenant_id(info)
+        reservation_id = PyUUID(id)
+
+        # Get existing reservation - RLS handles tenant filtering
+        reservation = db.execute(
+            select(ReservationModel).where(ReservationModel.id == reservation_id)
+        ).scalar_one_or_none()
+
+        if not reservation:
+            return PaymentResult(
+                success=False,
+                message="Reservation not found",
+                error_code="RESERVATION_NOT_FOUND",
+            )
+
+        if reservation.status != ReservationStatus.PENDING.value:
+            return PaymentResult(
+                success=False,
+                message=f"Cannot pay for reservation with status: {reservation.status}",
+                error_code="INVALID_STATUS",
+            )
+
+        # Call payment service
+        try:
+            payment_client = get_payment_client()
+            payment_request = PaymentRequest(
+                reservation_id=reservation_id,
+                user_id=PyUUID(str(reservation.user_id)),
+                tenant_id=tenant_id,
+                amount=float(reservation.total_cost),
+                currency="EUR",
+            )
+
+            response = payment_client.process_payment(payment_request)
+
+            if response.success and response.transaction_id:
+                # Payment succeeded - confirm the reservation
+                event_store = EventStore(db)
+                event = event_store.append(
+                    aggregate_id=reservation_id,
+                    event_type=EventType.PAYMENT_PROCESSED,
+                    data={
+                        "id": str(reservation_id),
+                        "status": ReservationStatus.CONFIRMED.value,
+                        "transaction_id": response.transaction_id,
+                    },
+                    tenant_id=tenant_id,
+                    event_metadata={"source": "graphql_mutation", "payment": True},
+                )
+
+                # Project event
+                projector = ReservationProjector(db)
+                projector.apply_event(event)
+                db.commit()
+
+                return PaymentResult(
+                    success=True,
+                    transaction_id=response.transaction_id,
+                    message="Payment processed successfully",
+                )
+            else:
+                return PaymentResult(
+                    success=False,
+                    transaction_id=response.transaction_id,
+                    message=response.message,
+                    error_code=response.error_code,
+                )
+
+        except PaymentServiceUnavailableError as e:
+            return PaymentResult(
+                success=False,
+                message=f"Payment service unavailable: {e}",
+                error_code="SERVICE_UNAVAILABLE",
+            )
+        except PaymentServiceError as e:
+            return PaymentResult(
+                success=False,
+                message=str(e),
+                error_code=e.error_code or "PAYMENT_ERROR",
+            )
+        except Exception as e:
+            return PaymentResult(
+                success=False,
+                message=f"Unexpected error: {e}",
+                error_code="INTERNAL_ERROR",
+            )
 
     @strawberry.mutation
     def delete_reservation(

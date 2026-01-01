@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package payment;
+
+option go_package = "payment/proto";
+
+// PaymentService provides payment processing operations
+service PaymentService {
+    // ProcessPayment processes a payment for a reservation
+    rpc ProcessPayment(PaymentRequest) returns (PaymentResponse);
+    
+    // GetPaymentStatus retrieves the status of a payment
+    rpc GetPaymentStatus(PaymentStatusRequest) returns (PaymentStatusResponse);
+    
+    // RefundPayment processes a refund for a previous payment
+    rpc RefundPayment(RefundRequest) returns (RefundResponse);
+}
+
+// PaymentRequest contains the details for processing a payment
+message PaymentRequest {
+    string reservation_id = 1;  // UUID of the reservation
+    string user_id = 2;         // UUID of the user
+    double amount = 3;          // Payment amount
+    string currency = 4;        // Currency code (EUR, USD)
+    string tenant_id = 5;       // UUID of the tenant for validation
+}
+
+// PaymentResponse contains the result of a payment operation
+message PaymentResponse {
+    bool success = 1;           // Whether the payment was successful
+    string transaction_id = 2;  // UUID of the transaction (if successful)
+    string message = 3;         // Human-readable message
+    string error_code = 4;      // Error code for categorization (if failed)
+}
+
+// PaymentStatusRequest contains the transaction ID to query
+message PaymentStatusRequest {
+    string transaction_id = 1;  // UUID of the transaction to query
+}
+
+// PaymentStatusResponse contains the payment status details
+message PaymentStatusResponse {
+    string status = 1;          // Payment status (PENDING, COMPLETED, FAILED, REFUNDED)
+    string transaction_id = 2;  // UUID of the transaction
+    double amount = 3;          // Payment amount
+    string currency = 4;        // Currency code
+    string created_at = 5;      // ISO 8601 timestamp of creation
+}
+
+// RefundRequest contains the details for processing a refund
+message RefundRequest {
+    string transaction_id = 1;  // UUID of the original transaction
+    double amount = 2;          // Refund amount (0 = full refund)
+    string reason = 3;          // Reason for refund
+    string tenant_id = 4;       // UUID of the tenant for validation
+}
+
+// RefundResponse contains the result of a refund operation
+message RefundResponse {
+    bool success = 1;           // Whether the refund was successful
+    string refund_id = 2;       // UUID of the refund (if successful)
+    string message = 3;         // Human-readable message
+    string error_code = 4;      // Error code for categorization (if failed)
+}
