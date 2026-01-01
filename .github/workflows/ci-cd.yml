@@ -32,10 +32,10 @@ jobs:
 
       - name: Lint code
         run: |
-          black --check .
-          mypy . --ignore-missing-imports
-          isort --check-only .
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          black --check . --exclude "payment_pb2"
+          mypy . --ignore-missing-imports --exclude "payment_pb2"
+          isort --check-only . --skip payment_pb2.py --skip payment_pb2_grpc.py
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=payment_pb2.py,payment_pb2_grpc.py
 
       - name: Run tests
         run: python -m pytest
