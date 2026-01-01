@@ -102,11 +102,14 @@ CREATE INDEX IF NOT EXISTS idx_reservations_end_time ON reservations(end_time);
 -- =============================================================================
 -- Row-Level Security (RLS) for Multitenancy
 -- =============================================================================
--- Ensures data isolation between tenants using PostgreSQL RLS policies.
--- The application sets app.tenant_id session variable before queries.
+-- Ensures STRICT data isolation between tenants using PostgreSQL RLS policies.
+-- The application MUST set app.tenant_id session variable before any queries.
+--
+-- STRICT POLICY: If app.tenant_id is not set or empty, NO rows are returned.
+-- This prevents any data leakage if the application fails to set the tenant.
 --
 -- RLS policies enforce:
--- - SELECT: Only rows matching current tenant_id are visible
+-- - SELECT: Only rows matching current tenant_id are visible (none if not set)
 -- - INSERT: New rows must have tenant_id matching current tenant_id
 -- - UPDATE: Can only update rows matching current tenant_id
 -- - DELETE: Can only delete rows matching current tenant_id
@@ -114,6 +117,10 @@ CREATE INDEX IF NOT EXISTS idx_reservations_end_time ON reservations(end_time);
 -- Enable RLS on tables
 ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE event_store ENABLE ROW LEVEL SECURITY;
+
+-- Force RLS to apply even to table owner
+ALTER TABLE reservations FORCE ROW LEVEL SECURITY;
+ALTER TABLE event_store FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if they exist
 DROP POLICY IF EXISTS tenant_isolation_policy ON reservations;
@@ -125,34 +132,35 @@ DROP POLICY IF EXISTS tenant_insert_policy ON event_store;
 -- Reservations Table RLS Policies
 -- =============================================================================
 
--- SELECT/UPDATE/DELETE policy: Only see/modify rows for current tenant
+-- STRICT policy: If app.tenant_id is not set or empty, return NO rows
+-- This ensures complete tenant isolation with no fallback
 CREATE POLICY tenant_isolation_policy ON reservations
     FOR ALL
-    USING (tenant_id = COALESCE(
-        NULLIF(current_setting('app.tenant_id', true), '')::UUID,
-        tenant_id
-    ))
-    WITH CHECK (tenant_id = COALESCE(
-        NULLIF(current_setting('app.tenant_id', true), '')::UUID,
-        tenant_id
-    ));
+    USING (
+        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
+        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+    )
+    WITH CHECK (
+        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
+        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+    );
 
 -- =============================================================================
 -- Event Store Table RLS Policies
 -- =============================================================================
 
--- SELECT/UPDATE/DELETE policy: Only see/modify events for current tenant
--- Note: Events should be append-only, but we enforce full isolation
+-- STRICT policy: If app.tenant_id is not set or empty, return NO rows
+-- Events are append-only, but we enforce full isolation
 CREATE POLICY tenant_isolation_policy ON event_store
     FOR ALL
-    USING (tenant_id = COALESCE(
-        NULLIF(current_setting('app.tenant_id', true), '')::UUID,
-        tenant_id
-    ))
-    WITH CHECK (tenant_id = COALESCE(
-        NULLIF(current_setting('app.tenant_id', true), '')::UUID,
-        tenant_id
-    ));
+    USING (
+        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
+        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+    )
+    WITH CHECK (
+        NULLIF(current_setting('app.tenant_id', true), '') IS NOT NULL
+        AND tenant_id = current_setting('app.tenant_id', true)::UUID
+    );
 
 -- =============================================================================
 -- Helper Functions

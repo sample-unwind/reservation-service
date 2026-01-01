@@ -163,9 +163,6 @@ def get_tenant_id(request: Request) -> str | None:
 # GraphQL Context
 # =============================================================================
 
-# Default tenant ID for requests without explicit tenant
-DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001"
-
 
 def get_context(
     request: Request,
@@ -176,6 +173,9 @@ def get_context(
 
     This function also sets up PostgreSQL RLS (Row-Level Security)
     by setting the tenant_id session variable before any queries.
+
+    STRICT MODE: If no tenant_id is provided, RLS will return NO rows.
+    This ensures complete tenant isolation with no fallback.
 
     Args:
         request: FastAPI request object
@@ -191,20 +191,20 @@ def get_context(
     if not tenant_id and current_user:
         tenant_id = current_user.get("tenant_id")
 
-    # Fall back to default tenant ID if none provided
+    # STRICT: If no tenant_id, don't set RLS variable - database will return no rows
     if not tenant_id:
-        tenant_id = DEFAULT_TENANT_ID
-        logger.debug(f"No tenant_id provided, using default: {tenant_id}")
-
-    # Set tenant_id for PostgreSQL RLS
-    # This enables row-level security policies to filter by tenant
-    try:
-        set_tenant_id(db, tenant_id)
-        logger.debug(f"RLS enabled for tenant: {tenant_id}")
-    except ValueError as e:
-        logger.error(f"Invalid tenant_id, using default: {e}")
-        tenant_id = DEFAULT_TENANT_ID
-        set_tenant_id(db, tenant_id)
+        logger.warning("No tenant_id provided - RLS will return empty results")
+    else:
+        # Set tenant_id for PostgreSQL RLS
+        # This enables row-level security policies to filter by tenant
+        try:
+            set_tenant_id(db, tenant_id)
+            logger.debug(f"RLS enabled for tenant: {tenant_id}")
+        except ValueError as e:
+            logger.error(
+                f"Invalid tenant_id format: {e} - RLS will return empty results"
+            )
+            tenant_id = None
 
     return {
         "db": db,
@@ -312,14 +312,25 @@ def get_reservation_stats(
 
     Returns counts of reservations by status for the current tenant.
     Uses PostgreSQL RLS for tenant isolation.
+
+    STRICT MODE: If no tenant_id is provided, returns zero counts.
     """
     from models import ReservationModel, ReservationStatus
 
     try:
-        tenant_id = get_tenant_id(request) or DEFAULT_TENANT_ID
+        tenant_id = get_tenant_id(request)
 
-        # Set tenant_id for RLS - all queries will be filtered by tenant
-        set_tenant_id(db, tenant_id)
+        # STRICT: If no tenant_id, don't set RLS - database will return no rows
+        if tenant_id:
+            set_tenant_id(db, tenant_id)
+        else:
+            logger.warning("Stats request without tenant_id - returning zeros")
+            return ReservationStatsResponse(
+                total_reservations=0,
+                active_reservations=0,
+                pending_reservations=0,
+                completed_reservations=0,
+            )
 
         # Build base query - RLS handles tenant filtering
         base_query = db.query(ReservationModel)
