@@ -20,10 +20,14 @@ import strawberry
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
-from clients.payment_client import (PaymentClient, PaymentRequest,
-                                    PaymentServiceError,
-                                    PaymentServiceUnavailableError,
-                                    RefundRequest, get_payment_client)
+from clients.payment_client import (
+    PaymentClient,
+    PaymentRequest,
+    PaymentServiceError,
+    PaymentServiceUnavailableError,
+    RefundRequest,
+    get_payment_client,
+)
 from event_store import EventStore, ReservationAggregate, ReservationProjector
 from models import EventModel, EventType, ReservationModel, ReservationStatus
 
