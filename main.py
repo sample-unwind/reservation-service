@@ -210,11 +210,18 @@ def get_context(
         tenant_id = DEFAULT_TENANT_ID
         set_tenant_id(db, tenant_id)
 
+    # Extract raw access token for service-to-service calls
+    auth_header = request.headers.get("authorization")
+    access_token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        access_token = auth_header.split(" ")[1]
+
     return {
         "db": db,
         "current_user": current_user,
         "tenant_id": tenant_id,
         "request": request,
+        "access_token": access_token,
     }
 
 

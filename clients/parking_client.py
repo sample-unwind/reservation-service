@@ -41,6 +41,7 @@ class ParkingClient:
         self,
         base_url: str = PARKING_SERVICE_URL,
         timeout: float = PARKING_SERVICE_TIMEOUT,
+        auth_token: str | None = None,
     ):
         """
         Initialize parking client.
@@ -48,10 +49,15 @@ class ParkingClient:
         Args:
             base_url: Base URL of the parking service
             timeout: Request timeout in seconds
+            auth_token: Optional JWT token for authentication
         """
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        self.auth_token = auth_token
+        headers = {}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        self._client = httpx.Client(timeout=timeout, headers=headers)
 
     def __enter__(self) -> "ParkingClient":
         """Context manager entry."""
@@ -153,32 +159,49 @@ class ParkingClient:
 _client: ParkingClient | None = None
 
 
-def get_parking_client() -> ParkingClient:
+def get_parking_client(auth_token: str | None = None) -> ParkingClient:
     """
-    Get or create a singleton parking client.
+    Get or create a parking client.
+
+    Args:
+        auth_token: Optional JWT token for authentication.
+                   If provided, creates a new client with auth.
+                   If not provided, returns singleton unauthenticated client.
 
     Returns:
         ParkingClient instance
     """
     global _client
+    if auth_token:
+        # Create new client with authentication token
+        return ParkingClient(auth_token=auth_token)
+    # Return singleton for unauthenticated calls
     if _client is None:
         _client = ParkingClient()
     return _client
 
 
-async def async_check_parking_spot(spot_id: str) -> bool:
+async def async_check_parking_spot(spot_id: str, auth_token: str | None = None) -> bool:
     """
     Async wrapper for checking parking spot existence.
 
     Args:
         spot_id: ID of the parking spot
+        auth_token: Optional JWT token for authentication
 
     Returns:
         True if the spot exists, False otherwise
     """
+    headers = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
     async with httpx.AsyncClient(timeout=PARKING_SERVICE_TIMEOUT) as client:
         try:
-            response = await client.get(f"{PARKING_SERVICE_URL}/analytics/parkings")
+            response = await client.get(
+                f"{PARKING_SERVICE_URL}/analytics/parkings",
+                headers=headers,
+            )
             response.raise_for_status()
             spots = response.json()
             return any(str(spot.get("id")) == spot_id for spot in spots)
