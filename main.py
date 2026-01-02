@@ -63,6 +63,22 @@ class ReservationStatsResponse(BaseModel):
     completed_reservations: int
 
 
+class EventStoreStatsResponse(BaseModel):
+    """Event store statistics response model."""
+
+    total_events: int
+    total_aggregates: int
+    events_by_type: dict[str, int]
+
+
+class RebuildResponse(BaseModel):
+    """Response for read model rebuild operation."""
+
+    success: bool
+    events_processed: int
+    message: str
+
+
 # =============================================================================
 # FastAPI Application
 # =============================================================================
@@ -371,6 +387,127 @@ def get_reservation_stats(
             active_reservations=0,
             pending_reservations=0,
             completed_reservations=0,
+        )
+
+
+# =============================================================================
+# Admin Endpoints (Event Sourcing)
+# =============================================================================
+
+
+@app.get(
+    "/admin/events/stats",
+    response_model=EventStoreStatsResponse,
+    summary="Event Store Statistics",
+    description="Get statistics about the event store (total events, aggregates, etc.).",
+    tags=["Admin"],
+)
+def get_event_store_stats(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> EventStoreStatsResponse:
+    """
+    Get event store statistics for monitoring and debugging.
+
+    Returns counts of events by type and total aggregates.
+    Useful for understanding system state and debugging issues.
+    """
+    from event_store import EventStore
+    from models import EventModel, EventType
+
+    try:
+        tenant_id = get_tenant_id(request) or DEFAULT_TENANT_ID
+        set_tenant_id(db, tenant_id)
+
+        event_store = EventStore(db)
+
+        # Get total events
+        total_events = event_store.get_event_count()
+
+        # Get total aggregates
+        aggregate_ids = event_store.get_aggregate_ids()
+        total_aggregates = len(aggregate_ids)
+
+        # Count events by type
+        events_by_type: dict[str, int] = {}
+        for event_type in EventType:
+            events = event_store.get_events_by_type(event_type, limit=10000)
+            events_by_type[event_type.value] = len(events)
+
+        return EventStoreStatsResponse(
+            total_events=total_events,
+            total_aggregates=total_aggregates,
+            events_by_type=events_by_type,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get event store stats: {e}")
+        return EventStoreStatsResponse(
+            total_events=0,
+            total_aggregates=0,
+            events_by_type={},
+        )
+
+
+@app.post(
+    "/admin/rebuild",
+    response_model=RebuildResponse,
+    summary="Rebuild Read Model",
+    description=(
+        "Rebuild the reservations read model from the event store. "
+        "This replays all events to reconstruct the current state. "
+        "Use with caution in production."
+    ),
+    tags=["Admin"],
+)
+def rebuild_read_model(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> RebuildResponse:
+    """
+    Rebuild the read model from the event store.
+
+    This is a key feature of Event Sourcing - the ability to reconstruct
+    the entire read model by replaying all events. Use cases:
+
+    1. Data corruption recovery
+    2. Schema migration (change projection logic, rebuild)
+    3. Debugging and testing
+    4. Creating new read models/projections
+
+    WARNING: This operation clears and rebuilds the reservations table.
+    Use with caution in production environments.
+    """
+    from event_store import ReservationProjector
+
+    try:
+        tenant_id = get_tenant_id(request) or DEFAULT_TENANT_ID
+        set_tenant_id(db, tenant_id)
+
+        logger.info(f"Starting read model rebuild for tenant {tenant_id}")
+
+        projector = ReservationProjector(db)
+        from uuid import UUID as PyUUID
+
+        events_processed = projector.rebuild_from_events(
+            tenant_id=PyUUID(tenant_id) if isinstance(tenant_id, str) else tenant_id
+        )
+
+        db.commit()
+
+        logger.info(f"Read model rebuild complete: {events_processed} events processed")
+
+        return RebuildResponse(
+            success=True,
+            events_processed=events_processed,
+            message=f"Successfully rebuilt read model from {events_processed} events",
+        )
+    except Exception as e:
+        logger.error(f"Failed to rebuild read model: {e}")
+        db.rollback()
+        return RebuildResponse(
+            success=False,
+            events_processed=0,
+            message=f"Failed to rebuild read model: {str(e)}",
         )
 
 

@@ -5,6 +5,29 @@ Implements CQRS/Event Sourcing patterns:
 - Event publishing and storage
 - Event replay for aggregate reconstruction
 - Projection updates for read models
+- Snapshot support for performance optimization
+
+CQRS/ES Architecture:
+======================
+
+1. COMMAND SIDE (Write Model):
+   - Commands (mutations) create events via EventStore.append()
+   - Events are immutable and never deleted
+   - Events contain all data needed to reconstruct state
+
+2. QUERY SIDE (Read Model):
+   - ReservationProjector applies events to update read model
+   - Read model (reservations table) is optimized for queries
+   - Can be rebuilt at any time from event history
+
+3. EVENT REPLAY:
+   - rebuild_from_events() rebuilds entire read model
+   - load_aggregate() reconstructs single aggregate state
+   - Useful for data recovery, debugging, and auditing
+
+4. SNAPSHOTS (Optional Optimization):
+   - Store periodic aggregate state to avoid replaying all events
+   - Improves performance for aggregates with many events
 """
 
 import logging
@@ -12,7 +35,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from models import EventModel, EventType, ReservationModel, ReservationStatus
@@ -156,6 +179,127 @@ class EventStore:
         ).scalar_one_or_none()
 
         return (result or 0) + 1
+
+    def get_all_events(
+        self,
+        tenant_id: UUID | None = None,
+        since: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[EventModel]:
+        """
+        Get all events, optionally filtered by tenant and time.
+
+        Useful for analytics, auditing, and debugging.
+
+        Args:
+            tenant_id: Optional tenant filter
+            since: Optional start time filter
+            limit: Maximum number of events to return
+
+        Returns:
+            List of events ordered by creation time
+        """
+        query = select(EventModel).order_by(EventModel.created_at).limit(limit)
+
+        if tenant_id is not None:
+            query = query.where(EventModel.tenant_id == tenant_id)
+        if since is not None:
+            query = query.where(EventModel.created_at >= since)
+
+        return list(self.session.execute(query).scalars().all())
+
+    def get_aggregate_ids(self, tenant_id: UUID | None = None) -> list[UUID]:
+        """
+        Get all unique aggregate IDs.
+
+        Args:
+            tenant_id: Optional tenant filter
+
+        Returns:
+            List of aggregate IDs
+        """
+        query = select(EventModel.aggregate_id).distinct()
+
+        if tenant_id is not None:
+            query = query.where(EventModel.tenant_id == tenant_id)
+
+        results = self.session.execute(query).scalars().all()
+        return [UUID(str(r)) for r in results]
+
+    def get_event_count(self, aggregate_id: UUID | None = None) -> int:
+        """
+        Get count of events.
+
+        Args:
+            aggregate_id: Optional aggregate filter
+
+        Returns:
+            Number of events
+        """
+        query = select(func.count(EventModel.id))
+
+        if aggregate_id is not None:
+            query = query.where(EventModel.aggregate_id == aggregate_id)
+
+        return self.session.execute(query).scalar() or 0
+
+    def load_aggregate(self, aggregate_id: UUID) -> "ReservationAggregate | None":
+        """
+        Reconstruct aggregate state by replaying all its events.
+
+        This is the core of Event Sourcing - the aggregate's current state
+        is derived entirely from its event history.
+
+        Args:
+            aggregate_id: ID of the aggregate to load
+
+        Returns:
+            Reconstructed aggregate or None if no events exist
+        """
+        events = self.get_events(aggregate_id)
+        if not events:
+            return None
+
+        aggregate = None
+        for event in events:
+            event_type = EventType(event.event_type)
+            data = event.data
+
+            if event_type == EventType.RESERVATION_CREATED:
+                # First event creates the aggregate
+                aggregate = ReservationAggregate(
+                    id=UUID(data["id"]),
+                    tenant_id=UUID(data["tenant_id"]),
+                    user_id=UUID(data["user_id"]),
+                    parking_spot_id=data["parking_spot_id"],
+                    start_time=datetime.fromisoformat(data["start_time"]),
+                    duration_hours=data["duration_hours"],
+                    total_cost=data["total_cost"],
+                )
+                aggregate.status = ReservationStatus(data["status"])
+                aggregate.created_at = datetime.fromisoformat(data["created_at"])
+                aggregate.updated_at = datetime.fromisoformat(data["updated_at"])
+
+            elif aggregate is not None:
+                # Apply subsequent events to mutate aggregate state
+                if event_type == EventType.RESERVATION_CONFIRMED:
+                    aggregate.status = ReservationStatus.CONFIRMED
+                elif event_type == EventType.RESERVATION_CANCELLED:
+                    aggregate.status = ReservationStatus.CANCELLED
+                elif event_type == EventType.RESERVATION_COMPLETED:
+                    aggregate.status = ReservationStatus.COMPLETED
+                elif event_type == EventType.RESERVATION_EXPIRED:
+                    aggregate.status = ReservationStatus.EXPIRED
+                elif event_type == EventType.PAYMENT_PROCESSED:
+                    aggregate.status = ReservationStatus.CONFIRMED
+                    if data.get("transaction_id"):
+                        aggregate.transaction_id = UUID(data["transaction_id"])
+                elif event_type == EventType.PAYMENT_FAILED:
+                    aggregate.status = ReservationStatus.CANCELLED
+
+                aggregate.updated_at = event.created_at
+
+        return aggregate
 
 
 class ReservationAggregate:
